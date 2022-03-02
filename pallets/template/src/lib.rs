@@ -32,11 +32,20 @@ pub mod pallet {
 
 	// The pallet's runtime storage items.
 	// https://docs.substrate.io/v3/runtime/storage
-	#[pallet::storage]
-	#[pallet::getter(fn something)]
+
 	// Learn more about declaring storage items:
 	// https://docs.substrate.io/v3/runtime/storage#declaring-storage-items
-	pub type Something<T> = StorageValue<_, u32>;
+	#[pallet::storage]
+	#[pallet::getter(fn something)]
+	pub type HighestPrice<T> = StorageValue<_, u32>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn highest_bidder)]
+	pub type HighestBidder<T: Config> = StorageValue<_, T::AccountId>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn is_started)]
+	pub type IsStarted<T> = StorageValue<_, bool>;
 
 	// Pallets use events to inform users when important changes are made.
 	// https://docs.substrate.io/v3/runtime/events-and-errors
@@ -45,7 +54,10 @@ pub mod pallet {
 	pub enum Event<T: Config> {
 		/// Event documentation should end with an array that provides descriptive names for event
 		/// parameters. [something, who]
-		SomethingStored(u32, T::AccountId),
+		// MyStorageStored(u32, T::AccountId),
+		AuctionStarted(u32, T::AccountId),
+		HighestPriceUpdated(u32, T::AccountId),
+		AuctionEnded(u32, T::AccountId),
 	}
 
 	// Errors inform users that something went wrong.
@@ -55,6 +67,12 @@ pub mod pallet {
 		NoneValue,
 		/// Errors should have helpful documentation associated with them.
 		StorageOverflow,
+		/// Lỗi này trả ra khi có người nào đó đã trả cao hơn
+		PaidLower,
+		/// aaaa
+		AuctionNotStartedOrEnded,
+		//
+		AuctionStarted,
 	}
 
 	// Dispatchable functions allows users to interact with the pallet and invoke state changes.
@@ -62,41 +80,94 @@ pub mod pallet {
 	// Dispatchable functions must be annotated with a weight and must return a DispatchResult.
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
-		/// An example dispatchable that takes a singles value as a parameter, writes the value to
-		/// storage and emits an event. This function must be dispatched by a signed extrinsic.
+		// /// An example dispatchable that takes a singles value as a parameter, writes the value to
+		// /// storage and emits an event. This function must be dispatched by a signed extrinsic.
 		#[pallet::weight(10_000 + T::DbWeight::get().writes(1))]
-		pub fn do_something(origin: OriginFor<T>, something: u32) -> DispatchResult {
-			// Check that the extrinsic was signed and get the signer.
-			// This function will return an error if the extrinsic is not signed.
-			// https://docs.substrate.io/v3/runtime/origins
+		pub fn bid(origin: OriginFor<T>, bid_price: u32) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
-			// Update storage.
-			<Something<T>>::put(something);
+			let is_auction_started = <IsStarted<T>>::get();
 
-			// Emit an event.
-			Self::deposit_event(Event::SomethingStored(something, who));
-			// Return a successful DispatchResultWithPostInfo
+			if is_auction_started.is_none() {
+				Err(Error::<T>::AuctionNotStartedOrEnded)?
+			}
+
+			if is_auction_started.unwrap() {
+				match <HighestPrice<T>>::get() {
+					None => {
+						<HighestPrice<T>>::put(bid_price);
+						Ok(())
+					},
+					Some(old) => {
+						if bid_price > old {
+							<HighestPrice<T>>::put(bid_price);
+
+							// Update highest bidder
+							<HighestBidder<T>>::put(who);
+
+							let highest_bidder = <HighestBidder<T>>::get().unwrap();
+
+							// Trả ra event HighestPriceUpdated
+							Self::deposit_event(Event::HighestPriceUpdated(
+								bid_price,
+								highest_bidder,
+							));
+							Ok(())
+						} else {
+							Err(Error::<T>::PaidLower)?
+						}
+					},
+				}
+			} else {
+				Err(Error::<T>::AuctionNotStartedOrEnded)?
+			}
+		}
+
+		#[pallet::weight(10_000 + T::DbWeight::get().writes(1))]
+		pub fn start(origin: OriginFor<T>) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			// Bắt đầu cho phép đấu giá
+			<IsStarted<T>>::put(true);
+
+			// Bắt đầu với giá cao nhất = 1000
+			<HighestPrice<T>>::put(1000);
+
+			// Trả ra 1 event tên là AuctionStarted
+			Self::deposit_event(Event::AuctionStarted(0, who));
 			Ok(())
 		}
 
-		/// An example dispatchable that may throw a custom error.
-		#[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,1))]
-		pub fn cause_error(origin: OriginFor<T>) -> DispatchResult {
-			let _who = ensure_signed(origin)?;
+		#[pallet::weight(10_000 + T::DbWeight::get().writes(1))]
+		pub fn end(origin: OriginFor<T>) -> DispatchResult {
+			// Dừng cuộc đấu giá
+			<IsStarted<T>>::put(false);
 
-			// Read a value from storage.
-			match <Something<T>>::get() {
-				// Return an error if the value has not been set.
-				None => Err(Error::<T>::NoneValue)?,
-				Some(old) => {
-					// Increment the value read from storage; will error in the event of overflow.
-					let new = old.checked_add(1).ok_or(Error::<T>::StorageOverflow)?;
-					// Update the value in storage with the incremented result.
-					<Something<T>>::put(new);
-					Ok(())
-				},
-			}
+			let highest_bidder = <HighestBidder<T>>::get().unwrap();
+			let highest_price = <HighestPrice<T>>::get().unwrap();
+
+			// Trả ra 1 event tên là AuctionEnded
+			Self::deposit_event(Event::AuctionEnded(highest_price, highest_bidder));
+			Ok(())
 		}
+
+		// /// An example dispatchable that may throw a custom error.
+		// #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,1))]
+		// pub fn cause_error(origin: OriginFor<T>) -> DispatchResult {
+		// 	let _who = ensure_signed(origin)?;
+
+		// 	// Read a value from storage.
+		// 	match <MyStorage<T>>::get() {
+		// 		// Return an error if the value has not been set.
+		// 		None => Err(Error::<T>::NoneValue)?,
+		// 		Some(old) => {
+		// 			// Increment the value read from storage; will error in the event of overflow.
+		// 			let new = old.checked_add(1).ok_or(Error::<T>::StorageOverflow)?;
+		// 			// Update the value in storage with the incremented result.
+		// 			<MyStorage<T>>::put(new);
+		// 			Ok(())
+		// 		},
+		// 	}
+		// }
 	}
 }
